@@ -284,7 +284,6 @@ async def submit_and_handle(new_page: Page) -> str:
             )
             .first
         )
-
         if await btn.count() > 0 and await btn.is_visible():
             await btn.scroll_into_view_if_needed()
             try:
@@ -367,7 +366,6 @@ async def run(args):
             try:
                 clicked = False
                 if args.match_by == "index":
-                    # indeks relatif di halaman
                     clicked = await click_edit_by_index(page, i - start_idx)
                 elif args.match_by == "idsbr":
                     clicked = await click_edit_by_text(page, normspace(row.get("IDSBR")))
