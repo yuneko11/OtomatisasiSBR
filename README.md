@@ -15,8 +15,8 @@ Tata cara penggunaan:
 4. Chrome akan otomatis terbuka dan silahkan login ke MATCHAPRO (jangan lupa sudah connect VPN)
 5. Di MATCHAPRO, buka Direktori Usaha dan pilih provinsi serta kab/kot yang ingin diotomatisasi
 6. Klik kanan open terminal di folder yang berisi clone repo ini
-7. Jalankan: python sbrfill.py --match-by idsbr
-   (Jika ingin melanjutkan pengisian dari baris 5 misalnya bisa jalankan: python sbrfill.py --match-by idsbr --start 5)
+7. Jalankan: python sbrfill.py --match-by idsbr --stop-on-error
+   (Jika ingin melanjutkan pengisian dari baris 5 misalnya bisa jalankan: python sbrfill.py --match-by idsbr --stop-on-error --start 5)
 
 Catatan tambahan:
 - File log.csv berguna untuk mentrack hasil berjalannya codingan yang dijalankan terakhir kali untuk melihat galat ataupun berhasilnya
