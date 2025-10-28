@@ -1,2 +1,3 @@
-row_index,result,note,screenshot
-6,OK,,
+ts,row_index,level,stage,note,screenshot
+20251028_174400,22,OK,FILL,Form terisi,
+20251028_174405,22,ERROR,SUBMIT,NO_SUCCESS_MODAL,
