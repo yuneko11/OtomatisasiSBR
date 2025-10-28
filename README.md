@@ -17,3 +17,7 @@ Tata cara penggunaan:
 6. Klik kanan open terminal di folder yang berisi clone repo ini
 7. Jalankan: python sbrfill.py --match-by id sbr
    (Jika ingin melanjutkan pengisian dari baris 5 misalnya bisa jalankan: python sbrfill.py --match-by id sbr --start 5)
+
+Catatan tambahan:
+- File log.csv berguna untuk mentrack hasil berjalannya codingan yang dijalankan terakhir kali untuk melihat galat ataupun berhasilnya
+- Nanti program akan otomatis menscreenshoot saat error dan menunjukkan di bagian mana error terjadi (gapenting2 amat si soalnya prefer ngebaca apa errornya)
