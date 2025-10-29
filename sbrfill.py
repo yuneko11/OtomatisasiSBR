@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright, Error as PWError, Page, Brows
 
 # Chrome dibuka dengan --remote-debugging-port=9222
 CDP_ENDPOINT = "http://localhost:9222"
-DEFAULT_EXCEL_PATH = r"C:\kuliah\SBR\Daftar Profiling SBR Kepala Madan.xlsx"
+DEFAULT_EXCEL_PATH = r"C:\kuliah\OtomatisasiSBR\Daftar Profiling SBR Kepala Madan.xlsx"
 SHEET_NAME = 0
 PAUSE_AFTER_EDIT_CLICK_MS = 1000
 PAUSE_AFTER_SUBMIT_CLICK_MS = 300
@@ -39,7 +39,24 @@ def ts() -> str:
 
 
 def normspace(s) -> str:
-    return re.sub(r"\s+", " ", str(s or "")).strip()
+    if s is None or (isinstance(s, float) and pd.isna(s)) or pd.isna(s):
+        return ""
+    return re.sub(r"\s+", " ", str(s)).strip()
+
+
+def norm_phone_str(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
+        return ""
+    return "".join(re.findall(r"\d", str(v)))  # hanya digit
+
+
+def normfloat_str(s: str) -> str:
+    s = normspace(s)
+    if not s:
+        return ""
+    s = s.replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    return m.group(0) if m else ""
 
 
 async def safe_screenshot(page: Page, label: str) -> str:
@@ -137,7 +154,17 @@ async def click_edit_by_text(page: Page, text: str) -> bool:
     return False
 
 
-async def fill_form(new_page: Page, status_label: str, sumber: str, catatan: str):
+async def fill_form(
+    new_page: Page,
+    status_label: str,
+    phone_val: str,
+    email_val: str,
+    lat_val: str,
+    lon_val: str,
+    sumber: str,
+    catatan: str
+):
+
     print("  Mulai mengisi form...")
 
     # 1. Keberadaan usaha/perusahaan
@@ -152,61 +179,105 @@ async def fill_form(new_page: Page, status_label: str, sumber: str, catatan: str
             print(f"    Keberadaan usaha diklik manual: {status_label}")
         await slow_pause(new_page)
 
-    # 2) Email: uncheck toggle
+     # 2) No. Telp + Email + Latitude + Longitude
     try:
-        # pastikan section "IDENTITAS USAHA/PERUSAHAAN" terlihat & terbuka
         ident_section = new_page.locator(
             "xpath=//*[self::h4 or self::h5][contains(., 'IDENTITAS USAHA/PERUSAHAAN')]/ancestor::*[contains(@class,'card') or contains(@class,'section')][1]"
         )
         if await ident_section.count() > 0:
             await ident_section.scroll_into_view_if_needed()
-            # kalau ada area collapse, buka
+
+        # Nomor Telepon
+        phone_clean = norm_phone_str(phone_val)
+        tel_input = (
+            new_page.get_by_placeholder(re.compile(r"^Nomor\s*Telepon$", re.I))
+            .or_(new_page.locator("input#nomor_telepon, input[name='nomor_telepon'], input[name='no_telp'], input[name='telepon']"))
+        ).first
+        await tel_input.wait_for(state="visible", timeout=1500)
+
+        if phone_clean:
+            await tel_input.fill("")
+            await tel_input.fill(phone_clean)
+            print(f"    Nomor Telepon diisi: {phone_clean}")
+        else:
+            print("    Nomor Telepon dilewati (Excel kosong/tidak valid).")
+
+        # --- Toggle & input Email ---
+        cb_email = new_page.locator("#check-email, input[type='checkbox']#check-email").first
+        if await cb_email.count() == 0:
+            cb_email = new_page.locator("xpath=//*[@id='check-email']").first
+        await cb_email.wait_for(state="attached", timeout=3000)
+
+        email_input = (
+            new_page.locator("input#email, input[name='email'], input[type='email']").first
+            .or_(new_page.get_by_placeholder(re.compile(r"^email$", re.I)))
+        )
+
+        if email_val:
             try:
-                collapse = ident_section.locator(".collapse").first
-                if await collapse.count() > 0:
-                    cls = await collapse.get_attribute("class") or ""
-                    if "show" not in cls:
-                        # cari tombol pembuka (header/title yang bisa di-klik)
-                        toggler = ident_section.locator("[data-bs-toggle='collapse'], [aria-controls]").first
-                        if await toggler.count() > 0:
-                            await toggler.click(force=True)
-                            await new_page.wait_for_timeout(250)
+                if not await cb_email.is_checked():
+                    await cb_email.check(force=True)
+            except Exception:
+                await new_page.evaluate("""
+                    () => { const el = document.querySelector('#check-email');
+                            if (el) { el.checked = true;
+                              el.dispatchEvent(new Event('input',{bubbles:true}));
+                              el.dispatchEvent(new Event('change',{bubbles:true})); } }
+                """)
+            try:
+                await email_input.wait_for(state="visible", timeout=2000)
+                await email_input.fill(email_val)
+                print(f"    Email diisi: {email_val}")
+            except Exception as e:
+                print(f"    Field email tidak bisa diisi: {e}")
+        else:
+            try:
+                if await cb_email.is_checked():
+                    await cb_email.uncheck(force=True)
+            except Exception:
+                await new_page.evaluate("""
+                    () => { const el = document.querySelector('#check-email');
+                            if (el) { el.checked = false;
+                              el.dispatchEvent(new Event('input',{bubbles:true}));
+                              el.dispatchEvent(new Event('change',{bubbles:true})); } }
+                """)
+            try:
+                if await email_input.count() > 0:
+                    await email_input.fill("")
             except Exception:
                 pass
+            print("    Toggle email dinonaktifkan.")
 
-        # cari checkbox dengan beberapa cara
-        cb = new_page.locator("#check-email, input[type='checkbox']#check-email").first
-        if await cb.count() == 0:
-            cb = new_page.locator("xpath=//*[@id='check-email']").first
+        # --- Latitude & Longitude ---
+        lat_clean = normfloat_str(lat_val)
+        lon_clean = normfloat_str(lon_val)
 
-        await cb.wait_for(state="attached", timeout=3000)
-        await cb.scroll_into_view_if_needed()
-
-        if await cb.is_checked():
+        if lat_clean:
+            lat_input = (
+                new_page.locator("input#latitude, input[name='latitude']").first
+                .or_(new_page.get_by_placeholder(re.compile(r"^latitude", re.I)))
+            )
             try:
-                await cb.uncheck(force=True)
-                print("    Toggle email dinonaktifkan.")
-            except Exception:
-                # fallback JS kalau styled switch/overlay
-                await new_page.evaluate("""
-                    () => {
-                        const el = document.querySelector('#check-email');
-                        if (!el) return;
-                        el.checked = false;
-                        el.dispatchEvent(new Event('input', {bubbles:true}));
-                        el.dispatchEvent(new Event('change', {bubbles:true}));
-                    }
-                """)
-                print("    Toggle email dinonaktifkan (via JS).")
-        else:
-            print("    Toggle email sudah tidak aktif.")
+                await lat_input.wait_for(state="visible", timeout=1500)
+                await lat_input.fill(lat_clean)
+                print(f"    Latitude diisi: {lat_clean}")
+            except Exception as e:
+                print(f"   Latitude dilewati (Excel kosong/tidak valid). {e}")
+
+        if lon_clean:
+            lon_input = (
+                new_page.locator("input#longitude, input[name='longitude']").first
+                .or_(new_page.get_by_placeholder(re.compile(r"^longitude", re.I)))
+            )
+            try:
+                await lon_input.wait_for(state="visible", timeout=1500)
+                await lon_input.fill(lon_clean)
+                print(f"    Longitude diisi: {lon_clean}")
+            except Exception as e:
+                print(f"    Longitude dilewati (Excel kosong/tidak valid). {e}")
+
     except Exception as e:
-        # fallback terakhir: klik label for='check-email'
-        try:
-            await new_page.locator("label[for='check-email']").click(force=True)
-            print("    Toggle email dinonaktifkan lewat label.")
-        except Exception as e2:
-            print(f"    Toggle email tidak ditemukan: {e2}")
+        print(f"    Pengisian telp/email/lat/lon bermasalah: {e}")
 
     # 3. Isi sumber profiling
     if sumber:
@@ -348,10 +419,10 @@ async def submit_and_handle(new_page: Page) -> str:
 
 async def run(args):
     ok_count = 0
-    err_count = 0
 
     # Baca Excel
-    df = pd.read_excel(args.excel, sheet_name=SHEET_NAME)
+    df = pd.read_excel(args.excel, sheet_name=SHEET_NAME, dtype=str)
+
 
     # Kolom wajib
     for c in ["Status", "Email", "Sumber", "Catatan"]:
@@ -378,6 +449,10 @@ async def run(args):
         for i in range(start_idx, end_idx):
             row = df.iloc[i]
             status_web = normspace(row.get("Status"))
+            phone_val = normspace(row.get("Nomor Telepon"))
+            email_val = normspace(row.get("Email"))
+            lat_val = normspace(row.get("Latitude"))
+            lon_val = normspace(row.get("Longitude"))
             sumber_val = normspace(row.get("Sumber"))
             catatan_val = normspace(row.get("Catatan"))
 
@@ -426,7 +501,15 @@ async def run(args):
 
             # --- Isi form ---
             try:
-                await fill_form(new_page, status_web, sumber_val, catatan_val)
+                await fill_form(
+                    new_page,
+                    status_web,
+                    phone_val,
+                    email_val,
+                    lat_val,
+                    lon_val,
+                    sumber_val,
+                    catatan_val)
                 log_event(logs, i+1, "OK", "FILL", "Form terisi")
             except Exception as e:
                 shot = await safe_screenshot(new_page, f"exception_fill_form_baris_{i+1}")
