@@ -5,7 +5,8 @@ Persiapan:
 2. Akun Profiling SBR di MATCHAPRO
 3. Mengexport excel yang ingin diotomatisasikan pengisiannya di MATCHAPRO (harus user yang memiliki akses export, ketua tim ipds biasanya)
 4. Mengisi excel sesuai format yang ada di repo
-   Note: Di satkerku yang kami isi cuma kolom requirement aja (status, uncheck email, sumber dan catatan profiling),
+   Note: Di satkerku yang kami isi ga semua kolom ya,
+   yang di programku ini buat ngisi status, no. telp, email, langitute, longitude, sumber profiling dan catatan profiling
    sebenarnya programnya fleksible aja tinggal dikoding lagi kalau ada tambahan kolom yang mau diisi
 
 Tata cara penggunaan:
@@ -16,7 +17,8 @@ Tata cara penggunaan:
 5. Di MATCHAPRO, buka Direktori Usaha dan pilih provinsi serta kab/kot yang ingin diotomatisasi
 6. Klik kanan open terminal di folder yang berisi clone repo ini
 7. Jalankan: python sbrfill.py --match-by idsbr --stop-on-error
-   (Jika ingin melanjutkan pengisian dari baris 5 misalnya bisa jalankan: python sbrfill.py --match-by idsbr --stop-on-error --start 5)
+   (Jika ingin melanjutkan pengisian dari baris 5 dan berhenti di bari 10 misalnya bisa jalankan:
+   python sbrfill.py --match-by idsbr --stop-on-error --start 5 --end 10)
 
 Catatan tambahan:
 - File log.csv berguna untuk mentrack hasil berjalannya codingan yang dijalankan terakhir kali untuk melihat galat ataupun berhasilnya
