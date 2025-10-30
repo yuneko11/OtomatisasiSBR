@@ -21,6 +21,19 @@ SCREENSHOT_DIR.mkdir(exist_ok=True)
 SLOW_MODE = True
 STEP_DELAY_MS = 700
 VERBOSE = True
+STATUS_ID_MAP = {
+    "Aktif": "kondisi_aktif",
+    "Tutup Sementara": "kondisi_tutup_sementara",
+    "Belum Beroperasi/Berproduksi": "kondisi_belum_beroperasi_berproduksi",
+    "Tutup": "kondisi_tutup",
+    "Alih Usaha": "kondisi_alih_usaha",
+    "Tidak Ditemukan": "kondisi_tidak_ditemukan",
+    "Aktif Pindah": "kondisi_aktif_pindah",
+    "Aktif Nonrespon": "kondisi_aktif_nonrespon",
+    "Duplikat": "kondisi_duplikat",
+    "Salah Kode Wilayah": "kondisi_salah_kode_wilayah",
+}
+
 
 
 def vlog(msg: str) -> None:
@@ -167,16 +180,35 @@ async def fill_form(
 
     print("  Mulai mengisi form...")
 
-    # 1. Keberadaan usaha/perusahaan
+    # 1. Keberadaan usaha/perusahaan — versi simple & pasti
     if status_label:
+        label_clean = normspace(status_label)
+        radio_id = STATUS_ID_MAP.get(label_clean)
+
         try:
-            await new_page.get_by_label(re.compile(f"^{re.escape(status_label)}$", re.I)).check()
-            print(f"    Keberadaan usaha diatur ke: {status_label}")
-        except PWError:
-            await ensure_click(
-                new_page.locator("label,span").filter(has_text=re.compile(f"^{re.escape(status_label)}$", re.I)).first
-            )
-            print(f"    Keberadaan usaha diklik manual: {status_label}")
+            if radio_id:
+                radio = new_page.locator(f"#{radio_id}")
+                await radio.wait_for(state="attached", timeout=2000)
+                try:
+                    await radio.check()  # cara paling benar utk input[type=radio]
+                except Exception:
+                    await radio.click(force=True)  # fallback kecil
+                print(f"    Keberadaan usaha diatur ke: {label_clean}")
+            else:
+                # fallback generik: cari label lalu gunakan atribut 'for'
+                lbl = new_page.locator("label").filter(
+                    has_text=re.compile(re.escape(label_clean), re.I)
+                ).first
+                await lbl.wait_for(state="visible", timeout=2000)
+                for_id = await lbl.get_attribute("for")
+                if for_id:
+                    await new_page.locator(f"#{for_id}").check()
+                else:
+                    await lbl.click(force=True)
+                print(f"    Keberadaan usaha diatur (fallback) ke: {label_clean}")
+        except Exception as e:
+            print(f"    Gagal set status '{label_clean}': {e}")
+
         await slow_pause(new_page)
 
      # 2) No. Telp + Email + Latitude + Longitude
@@ -202,79 +234,98 @@ async def fill_form(
         else:
             print("    Nomor Telepon dilewati (Excel kosong/tidak valid).")
 
-        # --- Toggle & input Email ---
-        cb_email = new_page.locator("#check-email, input[type='checkbox']#check-email").first
-        if await cb_email.count() == 0:
-            cb_email = new_page.locator("xpath=//*[@id='check-email']").first
-        await cb_email.wait_for(state="attached", timeout=3000)
+        # --- Toggle & input Email (logika: hanya uncheck bila web & Excel kosong) ---
+        cb_email = new_page.locator("#check-email").first
+        await cb_email.wait_for(state="attached", timeout=500)
 
         email_input = (
-            new_page.locator("input#email, input[name='email'], input[type='email']").first
+            new_page.locator("input#email, input[name='email'], input[type='email']")
             .or_(new_page.get_by_placeholder(re.compile(r"^email$", re.I)))
-        )
+        ).first
 
-        if email_val:
+        # Baca nilai email yang sudah ada di web
+        web_state = await new_page.evaluate("""
+            () => {
+                const inp = document.querySelector('input#email, input[name="email"], input[type="email"]');
+                return { value: inp ? (inp.value || '').trim() : '' };
+            }
+        """)
+
+        web_value = (web_state.get("value") or "").strip()
+        excel_value = (email_val or "").strip()
+
+        # 1. Jika Excel punya email → isi ulang (toggle dibiarkan menyala)
+        if excel_value:
             try:
-                if not await cb_email.is_checked():
-                    await cb_email.check(force=True)
-            except Exception:
-                await new_page.evaluate("""
-                    () => { const el = document.querySelector('#check-email');
-                            if (el) { el.checked = true;
-                              el.dispatchEvent(new Event('input',{bubbles:true}));
-                              el.dispatchEvent(new Event('change',{bubbles:true})); } }
-                """)
-            try:
-                await email_input.wait_for(state="visible", timeout=2000)
-                await email_input.fill(email_val)
-                print(f"    Email diisi: {email_val}")
+                await email_input.wait_for(state="visible", timeout=400)
+                await email_input.fill("")
+                await email_input.fill(excel_value)
+                print(f"    Email diisi: {excel_value}")
             except Exception as e:
-                print(f"    Field email tidak bisa diisi: {e}")
+                print(f"    Gagal mengisi email: {e}")
+
+        # 2. Jika web sudah berisi email dan Excel kosong → biarkan toggle menyala
+        elif web_value:
+            print(f"    Email di web sudah ada, toggle dibiarkan aktif: {web_value}")
+
+        # 3. Jika keduanya kosong → matikan toggle dan kosongkan input
         else:
             try:
-                if await cb_email.is_checked():
-                    await cb_email.uncheck(force=True)
-            except Exception:
                 await new_page.evaluate("""
-                    () => { const el = document.querySelector('#check-email');
-                            if (el) { el.checked = false;
-                              el.dispatchEvent(new Event('input',{bubbles:true}));
-                              el.dispatchEvent(new Event('change',{bubbles:true})); } }
+                    () => {
+                        const cb = document.querySelector('#check-email');
+                        const inp = document.querySelector('input#email, input[name="email"], input[type="email"]');
+                        if (cb) {
+                            cb.checked = false;
+                            cb.dispatchEvent(new Event('input', {bubbles:true}));
+                            cb.dispatchEvent(new Event('change', {bubbles:true}));
+                        }
+                        if (inp) {
+                            inp.value = '';
+                            inp.dispatchEvent(new Event('input', {bubbles:true}));
+                            inp.dispatchEvent(new Event('change', {bubbles:true}));
+                        }
+                    }
                 """)
-            try:
-                if await email_input.count() > 0:
-                    await email_input.fill("")
-            except Exception:
-                pass
-            print("    Toggle email dinonaktifkan.")
+                print("    Toggle email dinonaktifkan (web & Excel kosong).")
+            except Exception as e:
+                print(f"    Gagal menonaktifkan toggle email: {e}")
 
-        # --- Latitude & Longitude ---
+        # Latitude & Longitude
         lat_clean = normfloat_str(lat_val)
         lon_clean = normfloat_str(lon_val)
 
+        # Latitude
         if lat_clean:
-            lat_input = (
-                new_page.locator("input#latitude, input[name='latitude']").first
-                .or_(new_page.get_by_placeholder(re.compile(r"^latitude", re.I)))
-            )
             try:
+                lat_input = (
+                    new_page.locator("input#latitude, input[name='latitude']").first
+                    .or_(new_page.get_by_placeholder(re.compile(r"^latitude", re.I)))
+                )
                 await lat_input.wait_for(state="visible", timeout=1500)
+                await lat_input.fill("")          # bersihkan dulu
                 await lat_input.fill(lat_clean)
                 print(f"    Latitude diisi: {lat_clean}")
             except Exception as e:
-                print(f"   Latitude dilewati (Excel kosong/tidak valid). {e}")
+                print(f"    Gagal isi Latitude: {e}")
+        else:
+            print("    Latitude dilewati (Excel kosong/tidak valid).")
 
+        # Longitude
         if lon_clean:
-            lon_input = (
-                new_page.locator("input#longitude, input[name='longitude']").first
-                .or_(new_page.get_by_placeholder(re.compile(r"^longitude", re.I)))
-            )
             try:
+                lon_input = (
+                    new_page.locator("input#longitude, input[name='longitude']").first
+                    .or_(new_page.get_by_placeholder(re.compile(r"^longitude", re.I)))
+                )
                 await lon_input.wait_for(state="visible", timeout=1500)
+                await lon_input.fill("")          # bersihkan dulu
                 await lon_input.fill(lon_clean)
                 print(f"    Longitude diisi: {lon_clean}")
             except Exception as e:
-                print(f"    Longitude dilewati (Excel kosong/tidak valid). {e}")
+                print(f"    Gagal isi Longitude: {e}")
+        else:
+            print("    Longitude dilewati (Excel kosong/tidak valid).")
 
     except Exception as e:
         print(f"    Pengisian telp/email/lat/lon bermasalah: {e}")
@@ -448,6 +499,7 @@ async def run(args):
 
         for i in range(start_idx, end_idx):
             row = df.iloc[i]
+            nama_val = normspace (row.get("Nama"))
             status_web = normspace(row.get("Status"))
             phone_val = normspace(row.get("Nomor Telepon"))
             email_val = normspace(row.get("Email"))
@@ -456,7 +508,7 @@ async def run(args):
             sumber_val = normspace(row.get("Sumber"))
             catatan_val = normspace(row.get("Catatan"))
 
-            print(f"\n=== Baris {i + 1} :: Status='{status_web}' ===")
+            print(f"\n=== Baris {i + 1} :: {nama_val} :: Status = {status_web} ===")
 
             # --- Klik Edit ---
             try:
