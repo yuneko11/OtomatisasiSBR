@@ -3,6 +3,7 @@ import argparse
 import re
 from pathlib import Path
 from datetime import datetime
+from dataclasses import dataclass
 import pandas as pd
 from playwright.async_api import async_playwright, Error as PWError, Page, BrowserContext
 
@@ -10,8 +11,8 @@ from playwright.async_api import async_playwright, Error as PWError, Page, Brows
 
 # Chrome dibuka dengan --remote-debugging-port=9222
 CDP_ENDPOINT = "http://localhost:9222"
-DEFAULT_EXCEL_PATH = r"C:\kuliah\OtomatisasiSBR\Daftar Profiling SBR Kepala Madan.xlsx"
 SHEET_NAME = 0
+REQUIRED_COLUMNS_AUTOFILL = ("Status", "Email", "Sumber", "Catatan")
 PAUSE_AFTER_EDIT_CLICK_MS = 1000
 PAUSE_AFTER_SUBMIT_CLICK_MS = 300
 MAX_WAIT_MS = 5000
@@ -34,6 +35,64 @@ STATUS_ID_MAP = {
     "Salah Kode Wilayah": "kondisi_salah_kode_wilayah",
 }
 
+@dataclass
+class ExcelSelection:
+    path: Path
+    sheet_index: int = 0
+
+
+def _format_candidates(paths):
+    return ", ".join(str(p) for p in paths)
+
+
+def resolve_excel(path_arg: str | None, search_dir: Path, sheet_index: int) -> ExcelSelection:
+    """
+    Jika --excel diberikan -> pakai itu.
+    Jika tidak -> cari *.xlsx di search_dir dan search_dir/data (harus 1 file).
+    """
+    if path_arg:
+        p = Path(path_arg).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"File Excel tidak ditemukan: {p}")
+        return ExcelSelection(path=p, sheet_index=sheet_index)
+
+    locations = [search_dir]
+    seen, candidates = set(), []
+    for loc in locations:
+        if not loc.exists():
+            continue
+        for c in sorted(loc.glob("*.xlsx")):
+            r = c.resolve()
+            if r not in seen:
+                seen.add(r)
+                candidates.append(r)
+
+    if not candidates:
+        raise FileNotFoundError(
+            "Gunakan argumen --excel untuk memilih file secara eksplisit."
+        )
+    if len(candidates) > 1:
+        raise RuntimeError(
+            "Ditemukan lebih dari satu file Excel. Pilih salah satu dengan --excel. Kandidat: "
+            f"{_format_candidates(candidates)}"
+        )
+    return ExcelSelection(path=candidates[0], sheet_index=sheet_index)
+
+
+def load_dataframe(selection: ExcelSelection, dtype: dict | str | None = str) -> pd.DataFrame:
+    return pd.read_excel(selection.path, sheet_name=selection.sheet_index, dtype=dtype)
+
+
+def ensure_required_columns(df: pd.DataFrame, required=REQUIRED_COLUMNS_AUTOFILL) -> None:
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Kolom wajib belum ada di Excel: {', '.join(missing)}")
+
+
+def slice_rows(df: pd.DataFrame, start: int | None, end: int | None) -> tuple[int, int]:
+    start_idx = 0 if start is None else max(start - 1, 0)
+    end_idx = len(df) if end is None else min(end, len(df))
+    return start_idx, end_idx
 
 
 def vlog(msg: str) -> None:
@@ -106,6 +165,52 @@ async def get_active_directory_page(ctx: BrowserContext) -> Page:
     if not pages:
         raise RuntimeError("Tidak ada tab terbuka. Pastikan Chrome sudah membuka halaman Direktori Usaha.")
     return pages[-1]
+
+
+async def is_edit_locked_page(p: Page) -> bool:
+    try:
+        await p.wait_for_load_state("domcontentloaded", timeout=2500)
+    except Exception:
+        pass
+
+    checks = [
+        # teks utama yang muncul pada UI
+        re.compile(r"sedang\s+diedit\s+oleh\s+user\s+lain", re.I),
+        re.compile(r"tidak\s+bisa\s+melakukan\s+edit", re.I),
+        re.compile(r"Not\s+Authorized", re.I),
+        re.compile(r"Profiling\s+Info", re.I),  # judul halaman
+        re.compile(r"Back\s+to\s+Home", re.I),
+    ]
+
+    # 1) cek title cepat
+    try:
+        title = (await p.title()) or ""
+        if any(r.search(title) for r in checks):
+            return True
+    except Exception:
+        pass
+
+    # 2) cek konten halaman
+    try:
+        locator = p.get_by_text(re.compile(r"sedang\s+edit|Not\s+Authorized|Back\s+to\s+Home|Profiling\s+Info", re.I))
+        if await locator.count() > 0:
+            try:
+                await locator.first.wait_for(state="visible", timeout=600)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+
+    # 3) fallback: lihat URL pattern yang biasa muncul
+    try:
+        url = p.url or ""
+        if re.search(r"not-?authorized", url, re.I):
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 async def click_edit_by_index(page: Page, index0: int) -> bool:
@@ -471,24 +576,24 @@ async def submit_and_handle(new_page: Page) -> str:
 async def run(args):
     ok_count = 0
 
-    # Baca Excel
-    df = pd.read_excel(args.excel, sheet_name=SHEET_NAME, dtype=str)
+    # Tentukan lokasi pencarian: folder file script
+    base_dir = Path(__file__).resolve().parent
 
+    # Pilih file Excel otomatis (atau sesuai --excel) + load dataframe sebagai string
+    selection = resolve_excel(args.excel, search_dir=base_dir, sheet_index=args.sheet)
+    df = load_dataframe(selection, dtype=str)
 
-    # Kolom wajib
-    for c in ["Status", "Email", "Sumber", "Catatan"]:
-        if c not in df.columns:
-            raise RuntimeError(f"Kolom '{c}' tidak ditemukan di Excel")
+    # Validasi kolom wajib
+    ensure_required_columns(df, REQUIRED_COLUMNS_AUTOFILL)
 
-    # Kolom untuk match by
+    # Validasi kolom untuk match-by
     if args.match_by == "idsbr" and "IDSBR" not in df.columns:
         raise RuntimeError("Match by 'idsbr' dipilih tapi kolom 'IDSBR' tidak ada di Excel")
     if args.match_by == "name" and "Nama" not in df.columns:
         raise RuntimeError("Match by 'name' dipilih tapi kolom 'Nama' tidak ada di Excel")
 
-    # Tentukan rentang baris (1-indexed input → 0-based index)
-    start_idx = 0 if args.start is None else max(args.start - 1, 0)
-    end_idx = len(df) if args.end is None else min(args.end, len(df))
+    # Rentang baris (1-indexed → 0-based)
+    start_idx, end_idx = slice_rows(df, args.start, args.end)
 
     logs = []
 
@@ -551,6 +656,23 @@ async def run(args):
 
             await new_page.bring_to_front()
 
+            # Jika ternyata form sedang diedit profiler lain
+            try:
+                if await is_edit_locked_page(new_page):
+                    shot = await safe_screenshot(new_page, f"edit_locked_baris_{i+1}")
+                    log_event(logs, i+1, "WARN", "EDIT_LOCKED",
+                            "Form sedang dikunci/diedit oleh user lain. Melewati baris ini.", shot)
+                    try:
+                        await new_page.close()
+                    except Exception:
+                        pass
+
+                    await page.bring_to_front()
+                    await page.wait_for_timeout(300)
+                    continue
+            except Exception:
+                pass
+
             # --- Isi form ---
             try:
                 await fill_form(
@@ -576,19 +698,36 @@ async def run(args):
             # --- Submit & handle ---
             try:
                 result = await submit_and_handle(new_page)
+
                 if result != "OK":
                     shot = await safe_screenshot(new_page, f"submit_issue_baris_{i+1}_{result}")
-                    log_event(logs, i+1, "ERROR", "SUBMIT", result, shot)
-                    try:
-                        await new_page.close()
-                    except:
-                        pass
-                    if args.stop_on_error:
-                        break
+
+                    level = "ERROR" if result != "ERROR_FILL" else "ERROR"
+                    log_event(logs, i+1, level, "SUBMIT", result, shot)
+
+                    if result == "ERROR_FILL":
+                        print("    ERROR_FILL terdeteksi: tab form dibiarkan terbuka untuk diperiksa.")
+                        await new_page.bring_to_front()
+
+                        if args.stop_on_error:
+                            print("    --stop-on-error aktif: menghentikan proses.")
+                            break
+                        else:
+                            await page.bring_to_front()
+                            await page.wait_for_timeout(300)
+                            continue
                     else:
-                        continue
+                        try:
+                            await new_page.close()
+                        except:
+                            pass
+                        if args.stop_on_error:
+                            break
+                        else:
+                            continue
                 else:
                     log_event(logs, i+1, "OK", "SUBMIT", "Submit final sukses")
+
             except Exception as e:
                 shot = await safe_screenshot(new_page, f"exception_submit_baris_{i+1}")
                 log_event(logs, i+1, "ERROR", "SUBMIT", f"EXCEPTION:{e}", shot)
@@ -618,19 +757,25 @@ async def run(args):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="SBR Autofill (Chrome attach via CDP)")
-    ap.add_argument("--excel", default=DEFAULT_EXCEL_PATH, help="Path ke file Excel")
+    ap.add_argument("--excel", default=None, help="Path ke file Excel (opsional; bila kosong akan dicari otomatis)")
+    ap.add_argument("--sheet", type=int, default=SHEET_NAME, help="Index sheet Excel (default 0)")
     ap.add_argument("--start", type=int, default=None, help="Mulai dari baris ke- (1-indexed)")
     ap.add_argument("--end", type=int, default=None, help="Sampai baris ke- (inklusif; default = semua)")
-    ap.add_argument(
-        "--match-by",
-        choices=["index", "idsbr", "name"],
-        default="index",
-        help="Cara memilih tombol Edit: index (default), idsbr, atau name",
-    )
+    ap.add_argument("--match-by", choices=["index", "idsbr", "name"], default="index",
+                    help="Cara memilih tombol Edit: index (default), idsbr, atau name")
     ap.add_argument("--stop-on-error", action="store_true",
-                help="Berhenti di error pertama (default lanjut ke baris berikutnya).")
+                    help="Berhenti di error pertama (default lanjut ke baris berikutnya).")
     return ap.parse_args()
 
 if __name__ == "__main__":
-    args = parse_args()
-    asyncio.run(run(args))
+    import sys, traceback
+    try:
+        args = parse_args()
+        print(f"[INFO] start sbrfill.py  | match_by={args.match_by} | start={args.start} | end={args.end}")
+        asyncio.run(run(args))
+    except SystemExit:
+        raise
+    except Exception as e:
+        print("\n[ERROR] Uncaught exception:", e)
+        traceback.print_exc()
+        sys.exit(1)
