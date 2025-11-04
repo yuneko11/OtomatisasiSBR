@@ -55,7 +55,7 @@ OtomatisasiSBR/
 
 - **`sbr_fill.py`** → membuka dan mengisi form Profiling SBR sesuai Excel.
 - **`sbr_cancel.py`** → membuka dan menekan tombol *Cancel Submit* di form.
-- - **`Daftar Profiling SBR.xlsx`** → format excel untuk pengisian.
+- **`Daftar Profiling SBR.xlsx`** → format excel untuk pengisian.
 - Semua log dan screenshot otomatis tersimpan
 
 ---
