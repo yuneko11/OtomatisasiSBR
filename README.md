@@ -1,5 +1,10 @@
 >alooo, welcome to vibe coding dari yunee. Kindly ask bisa ke @yuli_lssy yaw
 
+>Dikembangkan oleh: Islamiati Yulia M. Lessy – Tim IPDS BPS Kabupaten Buru Selatan
+
+>Program ini dirancang sebagai inisiatif peningkatan efisiensi Profiling SBR di lingkungan BPS. Distribusi internal diperbolehkan untuk tujuan non-komersial dengan menyertakan kredit pengembang.
+
+
 # Profiling SBR Autofill CLI
 
 Profiling SBR Autofill CLI adalah script Python berbasis Playwright yang dibuat untuk **mengotomatisasi proses pengisian Profiling SBR (Statistik Badan Usaha)** secara cepat dan konsisten langsung dari data Excel ke web MatchaPro. Program didesain agar fleksibel, mudah digunakan, dan tetap aman untuk dioperasikan bersama browser Chrome yang telah login serta dilengkapi dengan monitoring via log dan screenshot.
